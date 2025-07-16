@@ -12,11 +12,16 @@ from transformers import PreTrainedTokenizerBase
 from prismatic.models.backbones.llm import LLaMa2LLMBackbone, LLMBackbone, MistralLLMBackbone, PhiLLMBackbone
 from prismatic.models.backbones.vision import (
     CLIPViTBackbone,
+    ConvNeXtV2Backbone,
     DinoCLIPViTBackbone,
     DinoSigLIPViTBackbone,
     DinoV2ViTBackbone,
+    EVAClipBackbone,
+    ExpertRouterBackbone,
     ImageTransform,
     IN1KViTBackbone,
+    InternImageBackbone,
+    OpenCLIPBackbone,
     SigLIPViTBackbone,
     VisionBackbone,
 )
@@ -47,6 +52,13 @@ VISION_BACKBONES = {
     # === Fused Backbones ===
     "dinoclip-vit-l-336px": {"cls": DinoCLIPViTBackbone, "kwargs": {"default_image_size": 336}},
     "dinosiglip-vit-so-384px": {"cls": DinoSigLIPViTBackbone, "kwargs": {"default_image_size": 384}},
+
+    # === Additional Experts ===
+    "convnextv2-base": {"cls": ConvNeXtV2Backbone, "kwargs": {"default_image_size": 224}},
+    "openclip-vit-b16": {"cls": OpenCLIPBackbone, "kwargs": {"default_image_size": 224}},
+    "internimage-base": {"cls": InternImageBackbone, "kwargs": {"default_image_size": 224}},
+    "eva02-b16-224": {"cls": EVAClipBackbone, "kwargs": {"default_image_size": 224}},
+    "expert-router": {"cls": ExpertRouterBackbone, "kwargs": {}},
 }
 
 
