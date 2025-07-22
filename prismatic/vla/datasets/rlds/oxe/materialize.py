@@ -31,6 +31,10 @@ def make_oxe_dataset_kwargs(
     dataset_kwargs = deepcopy(OXE_DATASET_CONFIGS[dataset_name])
     if dataset_kwargs["action_encoding"] not in [ActionEncoding.EEF_POS, ActionEncoding.EEF_R6]:
         raise ValueError(f"Cannot load `{dataset_name}`; only EEF_POS & EEF_R6 actions supported!")
+    # End-Effector Position
+    # End-Effector Rotation 6D
+
+
 
     # [Contract] For EEF_POS & EEF_R6 actions, only the last action dimension (gripper) is absolute!
     # Normalize all action dimensions *except* the gripper
@@ -42,11 +46,11 @@ def make_oxe_dataset_kwargs(
         dataset_kwargs["action_normalization_mask"] = [True] * 9 + [False]
     dataset_kwargs["action_proprio_normalization_type"] = action_proprio_normalization_type
 
-    # Adjust Loaded Camera Views
+    # Adjust Loaded Camera Views,
     if len(missing_keys := (set(load_camera_views) - set(dataset_kwargs["image_obs_keys"]))) > 0:
         raise ValueError(f"Cannot load `{dataset_name}`; missing camera views `{missing_keys}`")
 
-    # Filter
+    # Filter，只保留主摄像头
     dataset_kwargs["image_obs_keys"] = {
         k: v for k, v in dataset_kwargs["image_obs_keys"].items() if k in load_camera_views
     }
