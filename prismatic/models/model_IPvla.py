@@ -62,6 +62,66 @@ class MemoryModule(nn.Module):
         return self.to_embed(state)
 
 
+class PlanningDecoupler(nn.Module):
+    """Extracts planning embeddings from hidden states."""
+
+    def __init__(
+        self,
+        embed_dim: int,
+        planning_dim: int,
+        decoupler_type: str = "avg_pooling",
+        num_layers: int = 1,
+    ) -> None:
+        super().__init__()
+        self.decoupler_type = decoupler_type
+        self.output_dim = planning_dim
+
+        if decoupler_type == "avg_pooling":
+            self.pool = nn.AdaptiveAvgPool1d(1)
+        elif decoupler_type == "mlp":
+            self.mlp = nn.Sequential(
+                nn.Linear(embed_dim, planning_dim),
+                nn.Tanh(),
+                nn.Linear(planning_dim, planning_dim),
+            )
+        elif decoupler_type == "transformer":
+            layer = nn.TransformerEncoderLayer(
+                d_model=embed_dim, nhead=4, batch_first=True
+            )
+            self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+            self.proj = nn.Linear(embed_dim, planning_dim)
+        else:
+            raise ValueError(f"Unsupported decoupler_type `{decoupler_type}`")
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Return planning embedding from sequence of hidden states."""
+        if self.decoupler_type == "avg_pooling":
+            # hidden_states: [bsz, seq, dim] -> [bsz, dim]
+            hidden_states = hidden_states.transpose(1, 2)
+            pooled = self.pool(hidden_states).squeeze(-1)
+            return pooled
+        elif self.decoupler_type == "mlp":
+            pooled = hidden_states.mean(dim=1)
+            return self.mlp(pooled)
+        elif self.decoupler_type == "transformer":
+            out = self.encoder(hidden_states)
+            pooled = out[:, 0, :]
+            return self.proj(pooled)
+        else:
+            raise RuntimeError
+
+
+
+
+
+
+
+
+
+
+
+
+
 class IPOpenVLA(OpenVLA):
     """OpenVLA variant with a persistent memory state."""
 
@@ -257,3 +317,88 @@ class IPOpenVLA(OpenVLA):
         """Infer a continuous action while maintaining memory state."""
         actions = super().predict_action(image, instruction, unnorm_key=unnorm_key, **kwargs)
         return torch.tensor(actions)
+
+
+class PlanningAwareVLA(IPOpenVLA):
+    """IPOpenVLA variant that decouples planning information from perception."""
+
+    def __init__(
+        self,
+        *args,
+        decoupler_type: str = "avg_pooling",
+        planning_dim: Optional[int] = None,
+        memory_type: str = "gru",
+        memory_dim: int = 128,
+        decoupler_layers: int = 1,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, memory_type="none", **kwargs)
+
+        embed_dim = self.llm_backbone.embed_dim
+        planning_dim = planning_dim or embed_dim
+        self.decoupler = PlanningDecoupler(
+            embed_dim=embed_dim,
+            planning_dim=planning_dim,
+            decoupler_type=decoupler_type,
+            num_layers=decoupler_layers,
+        )
+        self.memory = MemoryModule(planning_dim, memory_dim, memory_type)
+        self.register_buffer(
+            "planning_state",
+            self.memory.init_state(1, torch.device("cpu")),
+            persistent=False,
+        )
+
+    def reset_planning_state(
+        self, batch_size: int = 1, device: Optional[torch.device] = None
+    ) -> None:
+        device = device or self.device
+        self.planning_state = self.memory.init_state(batch_size, device)
+
+    def update_planning_state(self, hidden_states: torch.Tensor) -> None:
+        plan_embed = self.decoupler(hidden_states)
+        self.planning_state = self.memory(plan_embed, self.planning_state).detach()
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> CausalLMOutputWithPast:
+        if self.memory.memory_type == "none":
+            return super().forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                labels=labels,
+                **kwargs,
+            )
+
+        if self.planning_state is None or self.planning_state.size(0) != input_ids.size(0):
+            self.reset_planning_state(batch_size=input_ids.size(0), device=input_ids.device)
+        plan_state = self.planning_state
+
+        input_embeddings = self.llm_backbone.embed_input_ids(input_ids)
+        plan_embed = self.memory.to_embedding(plan_state).unsqueeze(1)
+        input_embeddings = torch.cat([plan_embed, input_embeddings], dim=1)
+
+        if attention_mask is not None:
+            plan_mask = torch.ones(len(input_ids), 1, dtype=attention_mask.dtype, device=attention_mask.device)
+            attention_mask = torch.cat([plan_mask, attention_mask], dim=1)
+        if labels is not None:
+            plan_label = torch.full((len(input_ids), 1), IGNORE_INDEX, dtype=labels.dtype, device=labels.device)
+            labels = torch.cat([plan_label, labels], dim=1)
+
+        output = super(IPOpenVLA, self).forward(
+            input_ids=None,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values,
+            labels=labels,
+            inputs_embeds=input_embeddings,
+            **kwargs,
+        )
+
+        self.update_planning_state(output.hidden_states[-1])
+        return output

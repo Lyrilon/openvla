@@ -24,7 +24,7 @@ from prismatic.overwatch import initialize_overwatch
 from prismatic.vla import get_vla_dataset_and_collator
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
-from prismatic.models.model_IPvla import IPOpenVLA
+from prismatic.models.model_IPvla import PlanningAwareVLA
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -71,6 +71,9 @@ class TrainConfig:
     weight_decay: float = 0.0
     memory_type: str = "gru"
     memory_dim: int = 128
+    decoupler_type: str = "avg_pooling"
+    planning_dim: Optional[int] = None
+    decoupler_layers: int = 1
 
 
 @draccus.wrap()
@@ -101,7 +104,7 @@ def train(cfg: TrainConfig) -> None:
     if overwatch.is_rank_zero():
         save_dataset_statistics(dataset.dataset_statistics, run_dir)
 
-    vlm = IPOpenVLA(
+    vlm = PlanningAwareVLA(
         base_vlm.model_id,
         base_vlm.vision_backbone,
         base_vlm.llm_backbone,
@@ -109,6 +112,9 @@ def train(cfg: TrainConfig) -> None:
         action_tokenizer=action_tokenizer,
         memory_type=cfg.memory_type,
         memory_dim=cfg.memory_dim,
+        decoupler_type=cfg.decoupler_type,
+        planning_dim=cfg.planning_dim,
+        decoupler_layers=cfg.decoupler_layers,
     )
 
     optimizer = torch.optim.AdamW(vlm.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
@@ -121,7 +127,7 @@ def train(cfg: TrainConfig) -> None:
     for epoch in range(cfg.epochs):
         for step in dataloader:
             if step.get("episode_start", False):
-                vlm.reset_memory(batch_size=1, device=device_id)
+                vlm.reset_planning_state(batch_size=1, device=device_id)
             batch = collator([step])
             batch = {k: (v.to(device_id) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
             output = vlm(**batch)
